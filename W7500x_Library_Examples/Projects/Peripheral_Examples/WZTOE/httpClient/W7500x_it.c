@@ -34,7 +34,8 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "W7500x.h"
-
+#include "dhcp.h"
+#include "dns.h"
 
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
@@ -88,6 +89,8 @@ void PendSV_Handler(void)
 void SysTick_Handler(void)
 {
 	TimingDelay_Decrement();
+	DHCP_time_handler();
+	DNS_time_handler();
 }
 
 
