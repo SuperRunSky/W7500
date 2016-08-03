@@ -34,8 +34,6 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "W7500x.h"
-#include "dhcp.h"
-#include "dns.h"
 
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
@@ -43,6 +41,7 @@
 /* Private variables ---------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
 extern void TimingDelay_Decrement(void);
+extern void Timer_IRQ_Handler(void);
 /* Private functions ---------------------------------------------------------*/
 
 /******************************************************************************/
@@ -89,8 +88,6 @@ void PendSV_Handler(void)
 void SysTick_Handler(void)
 {
 	TimingDelay_Decrement();
-	DHCP_time_handler();
-	DNS_time_handler();
 }
 
 
@@ -212,7 +209,9 @@ void DMA_Handler(void)
   * @retval None
   */
 void DUALTIMER0_Handler(void)
-{}
+{
+	Timer_IRQ_Handler();
+}
 
 
 /**

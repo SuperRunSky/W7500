@@ -36,6 +36,7 @@
 #include "W7500x_uart.h"
 #include "W7500x_crg.h"
 #include "W7500x_wztoe.h"
+#include "W7500x_dualtimer.h"
 #include "W7500x_miim.h"
 #include "wizchip_conf.h"
 
@@ -88,15 +89,22 @@ uint8_t flag_process_dns_success = 0;
 uint8_t dns_server[4] = {8, 8, 8, 8};           // Secondary DNS server IP
 uint8_t Domain_IP[4]  = {0, };                  // Translated IP address by DNS Server
 
-// for Example domain name
-uint8_t Domain_name[] = "www.accuweather.com";
-uint8_t URI[] = "/en/kr/sourth-korea-weather";
+////////////////
+// Dual Timer //
+////////////////
+volatile uint16_t msec_cnt = 0;
+volatile uint16_t sec_cnt = 0;
+volatile uint32_t min_cnt = 0;
+
 
 /* Private function prototypes -----------------------------------------------*/
 void W7500x_Init(void);
 void W7500x_WZTOE_Init(void);
 int8_t process_dhcp(void);
 int8_t process_dns(void);
+
+void Timer_Configuration(void);
+void Timer_IRQ_Handler(void);
 
 void delay(__IO uint32_t milliseconds); //Notice: used ioLibray
 void TimingDelay_Decrement(void);
@@ -113,11 +121,16 @@ static __IO uint32_t TimingDelay;
 uint8_t g_send_buf[DATA_BUF_SIZE];
 uint8_t g_recv_buf[DATA_BUF_SIZE];
 
+// Network Information
 uint8_t mac_addr[6] = {0x00, 0x08, 0xDC, 0x71, 0x72, 0x77}; 
 uint8_t src_addr[4] = {192, 168,  77,  9};
 uint8_t gw_addr[4]  = {192, 168,  77,  1};
 uint8_t sub_addr[4] = {255, 255, 255,  0};
 
+// Example domain name
+uint8_t Domain_name[] = "www.accuweather.com";
+uint8_t URI[] = "/en/kr/sourth-korea-weather";
+uint8_t flag_sent_http_request = DISABLE;
 
 /**
  * @brief    Main routine for WIZwiki-W7500
@@ -151,13 +164,13 @@ int main(void)
 		flag_process_dhcp_success = ENABLE;
 	}
 	else // DHCP failed
+#endif
 	{
 		// Set default static IP settings
 		setSIPR(src_addr);
 		setGAR(gw_addr);
 		setSUBR(sub_addr);
 	}
-#endif
 	
 	/* DNS client */
 #ifdef __USE_DNS__
@@ -217,28 +230,33 @@ int main(void)
 		// HTTP client example	
 		if(httpc_isConnected) 
 		{
-			// Send: HTTP request
-			request.method = (uint8_t *)HTTP_GET;
-			request.uri = (uint8_t *)URI;
-			request.host = (uint8_t *)Domain_name;
-			
-			// HTTP client example #1: Function for send HTTP request (header and body fields are integrated)
+			if(!flag_sent_http_request)
 			{
-				httpc_send(&request, g_recv_buf, g_send_buf, len);
-			}
-			
-			// HTTP client example #2: Separate functions for HTTP request - default header + body
-			{
-				//httpc_send_header(&request, g_recv_buf, NULL, len);
-				//httpc_send_body(g_send_buf, len); // Send HTTP requset message body
-			}
-			
-			// HTTP client example #3: Separate functions for HTTP request with custom header fields - default header + custom header + body
-			{
-				//httpc_add_customHeader_field(tmpbuf, "Custom-Auth", "auth_method_string"); // custom header field extended - example #1
-				//httpc_add_customHeader_field(tmpbuf, "Key", "auth_key_string"); // custom header field extended - example #2
-				//httpc_send_header(&request, recv_buf, tmpbuf, len);
-				//httpc_send_body(send_buf, len);
+				// Send: HTTP request
+				request.method = (uint8_t *)HTTP_GET;
+				request.uri = (uint8_t *)URI;
+				request.host = (uint8_t *)Domain_name;
+				
+				// HTTP client example #1: Function for send HTTP request (header and body fields are integrated)
+				{
+					httpc_send(&request, g_recv_buf, g_send_buf, 0);
+				}
+				
+				// HTTP client example #2: Separate functions for HTTP request - default header + body
+				{
+					//httpc_send_header(&request, g_recv_buf, NULL, len);
+					//httpc_send_body(g_send_buf, len); // Send HTTP requset message body
+				}
+				
+				// HTTP client example #3: Separate functions for HTTP request with custom header fields - default header + custom header + body
+				{
+					//httpc_add_customHeader_field(tmpbuf, "Custom-Auth", "auth_method_string"); // custom header field extended - example #1
+					//httpc_add_customHeader_field(tmpbuf, "Key", "auth_key_string"); // custom header field extended - example #2
+					//httpc_send_header(&request, g_recv_buf, tmpbuf, len);
+					//httpc_send_body(g_send_buf, len);
+				}
+				
+				flag_sent_http_request = ENABLE;
 			}
 			
 			// Recv: HTTP response
@@ -251,11 +269,12 @@ int main(void)
 				for(i = 0; i < len; i++) printf("%c", g_recv_buf[i]);
 				printf("\r\n");
 				printf("======================================================\r\n");
-				
-				httpc_disconnect();
-				break;
 			}
 		}
+		
+#ifdef __USE_DHCP__
+		DHCP_run(); // DHCP renew
+#endif
 	}
 }
 
@@ -268,8 +287,12 @@ void W7500x_Init(void)
 	SystemInit();
 
 	/* UART Init */
-	UART_StructInit(&UART_InitStructure);
-	UART_Init(UART1,&UART_InitStructure);
+	//UART_StructInit(&UART_InitStructure);
+	//UART_Init(UART1,&UART_InitStructure);
+	S_UART_Init(115200);
+	
+	/* Dual Timer Init */
+	Timer_Configuration();
 
 	/* SysTick_Config */
 	SysTick_Config((GetSystemClock()/1000));
@@ -355,7 +378,8 @@ void W7500x_dhcp_assign(void)
 	getGWfromDHCP(gWIZNETINFO.gw);
 	getSNfromDHCP(gWIZNETINFO.sn);
 	getDNSfromDHCP(gWIZNETINFO.dns);
-
+	getSHAR(gWIZNETINFO.mac);
+	
 #ifdef __USE_DHCP__
 	gWIZNETINFO.dhcp = NETINFO_DHCP;
 #else
@@ -414,6 +438,64 @@ int8_t process_dns(void)
 	
 	return ret;
 }
+
+void Timer_Configuration(void)
+{
+	DUALTIMER_InitTypDef Dualtimer_InitStructure;
+	
+	NVIC_EnableIRQ(DUALTIMER0_IRQn);
+	
+	/* Dualtimer 0_0 clock enable */
+	DUALTIMER_ClockEnable(DUALTIMER0_0);
+
+	/* Dualtimer 0_0 configuration */
+	Dualtimer_InitStructure.TimerLoad = GetSystemClock() / 1000;
+	Dualtimer_InitStructure.TimerControl_Mode = DUALTIMER_TimerControl_Periodic;
+	Dualtimer_InitStructure.TimerControl_OneShot = DUALTIMER_TimerControl_Wrapping;
+	Dualtimer_InitStructure.TimerControl_Pre = DUALTIMER_TimerControl_Pre_1;
+	Dualtimer_InitStructure.TimerControl_Size = DUALTIMER_TimerControl_Size_32;
+
+	DUALTIMER_Init(DUALTIMER0_0, &Dualtimer_InitStructure);
+
+	/* Dualtimer 0_0 Interrupt enable */
+	DUALTIMER_IntConfig(DUALTIMER0_0, ENABLE);
+
+	/* Dualtimer 0_0 start */
+	DUALTIMER_Start(DUALTIMER0_0);
+}
+
+void Timer_IRQ_Handler(void)
+{
+	if(DUALTIMER_GetIntStatus(DUALTIMER0_0))
+	{
+		DUALTIMER_IntClear(DUALTIMER0_0);
+		
+		msec_cnt++; // millisecond counter
+		
+		/* Second Process */
+		if(msec_cnt >= 1000 - 1) //second //if((msec_cnt % 1000) == 0) 
+		{
+			msec_cnt = 0;
+			sec_cnt++;
+			
+			DHCP_time_handler();	// Time counter for DHCP timeout
+			DNS_time_handler();		// Time counter for DNS timeout
+		}
+		
+		/* Minute Process */
+		if(sec_cnt >= 60)
+		{
+			sec_cnt = 0;
+			min_cnt++;
+		}
+	}
+
+	if(DUALTIMER_GetIntStatus(DUALTIMER0_1))
+	{
+		DUALTIMER_IntClear(DUALTIMER0_1);
+	}
+}
+
 
 /**
   * @brief  Inserts a delay time.
